@@ -38,6 +38,8 @@ class ZMANClient:
         self._stop = threading.Event()
         self._session = requests.Session()
         self._connected = threading.Event()
+        self._query_results = []  # captured /ravenna/query results
+        self._query_event = threading.Event()
 
     # ------------------------------------------------------------------
     # CometD transport
@@ -124,7 +126,12 @@ class ZMANClient:
                 data = msg.get("data")
                 if data is None:
                     continue
-                if channel in ("/ravenna/settings", "/ravenna/status"):
+                if channel == "/ravenna/query":
+                    result = data.get("result", [])
+                    if result:
+                        self._query_results = result
+                        self._query_event.set()
+                elif channel in ("/ravenna/settings", "/ravenna/status"):
                     path = data.get("path", "")
                     value = data.get("value")
                     if path == "$" and channel == "/ravenna/status":
@@ -310,18 +317,22 @@ class ZMANClient:
             })
         return results
 
-    def get_discovered_sources(self):
+    def get_discovered_sources(self, logger=None):
         """Query SAP-discovered remote sources available on the network.
 
         Returns a list of SAP source URIs (e.g. 'sap://MyStream').
         These are streams announced by other devices that this module can receive.
         """
+        # Clear previous results and send query
+        self._query_event.clear()
+        self._query_results = []
         resp = self._publish("/service/ravenna/query", {"query": "sessions"})
-        for msg in resp:
-            if msg.get("channel") == "/ravenna/query":
-                data = msg.get("data", {})
-                return data.get("result", [])
-        return []
+        # Check if results came in the publish response
+        if self._query_results:
+            return list(self._query_results)
+        # Results may arrive on the background long-poll instead — wait
+        self._query_event.wait(timeout=5)
+        return list(self._query_results)
 
     # ------------------------------------------------------------------
     # Actions
